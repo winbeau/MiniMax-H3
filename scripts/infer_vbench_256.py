@@ -84,7 +84,7 @@ def build_pipelines(args: argparse.Namespace):
     # MiniMax-H3 denoises video and audio jointly, but this benchmark requests a
     # silent MP4. Removing the audio decoder avoids loading the audio VAE and
     # guarantees that the output container has no audio stream.
-    workflow.sub_blocks["decode"].sub_blocks.pop("audio")
+    workflow.sub_blocks.pop("decode.audio")
 
     text_workflow = workflow.sub_blocks.pop("text_encoder")
     text_manager = ComponentsManager()
