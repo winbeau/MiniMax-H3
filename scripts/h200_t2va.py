@@ -24,6 +24,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-frames", type=int, default=124)
     parser.add_argument("--num-inference-steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--text-encoder-device",
+        choices=("cpu", "cuda:1"),
+        default="cuda:1",
+        help="Run the Qwen conditioner on CPU when GPU 3 does not have roughly 40 GiB free.",
+    )
+    parser.add_argument(
+        "--group-offload",
+        action="store_true",
+        help="Stream transformer and video-VAE blocks through GPU 2 instead of loading each component in full.",
+    )
     return parser.parse_args()
 
 
@@ -41,8 +52,10 @@ def main() -> None:
 
     workflow = ModularPipeline.from_pretrained(model_path, local_files_only=True).blocks.get_workflow("t2va")
 
-    text_manager = ComponentsManager()
-    text_manager.enable_auto_cpu_offload(device="cuda:1")
+    text_manager = None
+    if args.text_encoder_device == "cuda:1":
+        text_manager = ComponentsManager()
+        text_manager.enable_auto_cpu_offload(device=args.text_encoder_device)
     conditioner = workflow.sub_blocks.pop("text_encoder").init_pipeline(
         model_path,
         components_manager=text_manager,
@@ -64,6 +77,15 @@ def main() -> None:
         pretrained_model_name_or_path=model_path,
         local_files_only=True,
     )
+    if args.group_offload:
+        for component_name in ("transformer", "vae"):
+            component = getattr(generator_pipeline, component_name)
+            component.enable_group_offload(
+                onload_device=torch.device("cuda:0"),
+                offload_device=torch.device("cpu"),
+                offload_type="block_level",
+                num_blocks_per_group=1,
+            )
 
     state = conditioner(prompt=args.prompt)
     results = generator_pipeline(
