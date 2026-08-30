@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import gc
 import json
 import os
 import time
 from pathlib import Path
+from typing import TextIO
 
 import torch
 from diffusers import ComponentsManager, ModularPipeline
@@ -60,6 +62,19 @@ def append_manifest(path: Path, payload: dict[str, object]) -> None:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def acquire_run_lock(output_dir: Path) -> TextIO | None:
+    lock_path = output_dir / ".infer_vbench_256.lock"
+    handle = lock_path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.write(f"pid={os.getpid()}\n")
+    handle.flush()
+    return handle
 
 
 def build_pipelines(args: argparse.Namespace):
@@ -135,6 +150,14 @@ def main() -> None:
         )
     if not args.model_path.exists():
         raise FileNotFoundError(args.model_path)
+
+    run_lock = acquire_run_lock(output_dir)
+    if run_lock is None:
+        print(f"[{SCRIPT_NAME}] another process is already generating into {output_dir}; exiting cleanly")
+        return
+    if not args.overwrite and all(is_complete(output_dir / f"video_{index:03d}.mp4") for index in range(start, end)):
+        print(f"[{SCRIPT_NAME}] all requested videos already exist in {output_dir}; nothing to do")
+        return
 
     conditioner, generator_pipeline = build_pipelines(args)
     manifest_path = output_dir / "manifest.jsonl"
