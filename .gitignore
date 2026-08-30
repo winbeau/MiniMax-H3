@@ -4,5 +4,6 @@
 .venv/
 models/
 outputs/
+logs/
 __pycache__/
 *.py[cod]
