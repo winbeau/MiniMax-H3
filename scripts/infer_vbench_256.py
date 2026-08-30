@@ -21,19 +21,29 @@ SCRIPT_NAME = Path(__file__).name
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run all 256 VBench prompts with MiniMax-H3 split over two H200 GPUs."
+        description="Run VBench prompts with the lossless MiniMax-H3 Base schedule on one or two H200 GPUs."
     )
     parser.add_argument("--prompts-csv", type=Path, default=REPO_ROOT / "VBench-origin_256_prompts.csv")
-    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "outputs" / "vbench_origin_256")
+    parser.add_argument("--output-dir", type=Path, default=REPO_ROOT / "outputs" / "vbench_origin_256_hq")
     parser.add_argument("--model-path", type=Path, default=REPO_ROOT / "models" / "MiniMax-H3")
-    parser.add_argument("--height", type=int, default=256)
-    parser.add_argument("--width", type=int, default=448)
+    parser.add_argument("--height", type=int, default=512)
+    parser.add_argument("--width", type=int, default=768)
     parser.add_argument("--num-frames", type=int, default=124)
     parser.add_argument("--fps", type=int, default=24)
-    parser.add_argument("--num-inference-steps", type=int, default=2)
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=50,
+        help="Sigma grid points including terminal zero; 50 means 49 transformer evaluations.",
+    )
     parser.add_argument("--seed-base", type=int, default=42)
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--end-index", type=int, default=None, help="Exclusive end index; defaults to all prompts.")
+    parser.add_argument(
+        "--memory-reserve-margin",
+        default="16GB",
+        help="GPU memory kept free by Diffusers auto CPU offload on a single visible GPU.",
+    )
     parser.add_argument("--group-offload", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -86,24 +96,41 @@ def build_pipelines(args: argparse.Namespace):
     # guarantees that the output container has no audio stream.
     workflow.sub_blocks.pop("decode.audio")
 
-    text_workflow = workflow.sub_blocks.pop("text_encoder")
-    text_manager = ComponentsManager()
-    text_manager.enable_auto_cpu_offload(device="cuda:1")
-    conditioner = text_workflow.init_pipeline(model_path, components_manager=text_manager)
-    conditioner.load_components(
-        dtype=torch.bfloat16,
-        pretrained_model_name_or_path=model_path,
-        local_files_only=True,
-    )
+    if torch.cuda.device_count() == 1:
+        # A single manager coordinates Qwen and the 61.7 GB transformer so only
+        # the component currently executing occupies the H200.
+        generation_manager = ComponentsManager()
+        generator_pipeline = workflow.init_pipeline(model_path, components_manager=generation_manager)
+        generator_pipeline.load_components(
+            dtype=torch.bfloat16,
+            pretrained_model_name_or_path=model_path,
+            local_files_only=True,
+        )
+        generation_manager.enable_auto_cpu_offload(
+            device="cuda:0",
+            memory_reserve_margin=args.memory_reserve_margin,
+        )
+        conditioner = None
+    else:
+        # With two H200s, Qwen and generation each fit in BF16 on their own card.
+        text_workflow = workflow.sub_blocks.pop("text_encoder")
+        text_manager = ComponentsManager()
+        conditioner = text_workflow.init_pipeline(model_path, components_manager=text_manager)
+        conditioner.load_components(
+            dtype=torch.bfloat16,
+            pretrained_model_name_or_path=model_path,
+            local_files_only=True,
+        )
+        text_manager.enable_auto_cpu_offload(device="cuda:1")
 
-    generation_manager = ComponentsManager()
-    generation_manager.enable_auto_cpu_offload(device="cuda:0")
-    generator_pipeline = workflow.init_pipeline(model_path, components_manager=generation_manager)
-    generator_pipeline.load_components(
-        dtype=torch.bfloat16,
-        pretrained_model_name_or_path=model_path,
-        local_files_only=True,
-    )
+        generation_manager = ComponentsManager()
+        generator_pipeline = workflow.init_pipeline(model_path, components_manager=generation_manager)
+        generator_pipeline.load_components(
+            dtype=torch.bfloat16,
+            pretrained_model_name_or_path=model_path,
+            local_files_only=True,
+        )
+        generation_manager.enable_auto_cpu_offload(device="cuda:0")
     if args.group_offload:
         generator_pipeline.vae.to(dtype=torch.float16)
         generator_pipeline.transformer.enable_group_offload(
@@ -131,22 +158,28 @@ def main() -> None:
         raise ValueError("MiniMax-H3 height and width must be divisible by 32")
     if (args.num_frames - 5) % 17:
         raise ValueError("MiniMax-H3 num_frames must satisfy num_frames = 17 * k + 5")
+    if args.fps != 24:
+        raise ValueError("MiniMax-H3 generates at its canonical 24 FPS")
+    if args.num_inference_steps < 2:
+        raise ValueError("MiniMax-H3 needs at least two sigma grid points including terminal zero")
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     print(
         f"[{SCRIPT_NAME}] prompts={len(rows)} range=[{start}, {end}) "
-        f"frames={args.num_frames} size={args.width}x{args.height} fps={args.fps} audio=off"
+        f"frames={args.num_frames} size={args.width}x{args.height} fps={args.fps} "
+        f"sigma_points={args.num_inference_steps} nfe={args.num_inference_steps - 1} "
+        f"precision=bf16 audio=off"
     )
     if args.dry_run:
         for index in range(start, min(end, start + 3)):
             print(f"video_{index:03d}.mp4 <- {rows[index]['prompt']}")
         return
 
-    if torch.cuda.device_count() != 2:
+    if torch.cuda.device_count() not in (1, 2):
         raise RuntimeError(
-            f"Expected exactly two visible GPUs, found {torch.cuda.device_count()}. "
-            "Launch with CUDA_VISIBLE_DEVICES=0,1."
+            f"Expected one or two visible GPUs, found {torch.cuda.device_count()}. "
+            "Use one H200 for smoke tests or two H200s for the batch."
         )
     if not args.model_path.exists():
         raise FileNotFoundError(args.model_path)
@@ -171,19 +204,23 @@ def main() -> None:
         seed = args.seed_base + index
         print(f"[{index + 1:03d}/{len(rows)}] seed={seed} prompt={row['prompt']!r}", flush=True)
         started = time.monotonic()
-        state = conditioner(prompt=row["prompt"])
-        results = generator_pipeline(
-            state=state,
-            height=args.height,
-            width=args.width,
-            num_frames=args.num_frames,
-            num_inference_steps=args.num_inference_steps,
-            generator=torch.Generator().manual_seed(seed),
-            output="videos",
-        )
+        generation_args = {
+            "height": args.height,
+            "width": args.width,
+            "num_frames": args.num_frames,
+            "num_inference_steps": args.num_inference_steps,
+            "generator": torch.Generator(device="cpu").manual_seed(seed),
+            "output": ["videos"],
+        }
+        state = None
+        if conditioner is None:
+            results = generator_pipeline(prompt=row["prompt"], **generation_args)
+        else:
+            state = conditioner(prompt=row["prompt"])
+            results = generator_pipeline(state=state, **generation_args)
         temp_path = output_dir / f".video_{index:03d}.partial.mp4"
         temp_path.unlink(missing_ok=True)
-        encode_video(results[0], fps=args.fps, output_path=str(temp_path))
+        encode_video(results["videos"][0], fps=args.fps, output_path=str(temp_path))
         if not is_complete(temp_path):
             raise RuntimeError(f"MiniMax-H3 did not create a valid file: {temp_path}")
         temp_path.replace(output_path)
@@ -197,6 +234,11 @@ def main() -> None:
                 "output": output_path.name,
                 "seed": seed,
                 "elapsed_seconds": round(elapsed, 3),
+                "quality_profile": "lossless-base",
+                "sigma_points": args.num_inference_steps,
+                "transformer_evaluations": args.num_inference_steps - 1,
+                "video_flow_shift": 12.0,
+                "audio_flow_shift": 3.0,
                 "num_frames": args.num_frames,
                 "width": args.width,
                 "height": args.height,
@@ -205,7 +247,9 @@ def main() -> None:
             },
         )
         print(f"[{index + 1:03d}/{len(rows)}] saved {output_path.name} in {elapsed:.1f}s", flush=True)
-        del state, results
+        del results
+        if state is not None:
+            del state
         gc.collect()
         torch.cuda.empty_cache()
 

@@ -19,10 +19,10 @@ def parse_args() -> argparse.Namespace:
             "Snow crunches under its paws and a soft winter wind moves the branches."
         ),
     )
-    parser.add_argument("--height", type=int, default=544)
-    parser.add_argument("--width", type=int, default=960)
+    parser.add_argument("--height", type=int, default=512)
+    parser.add_argument("--width", type=int, default=768)
     parser.add_argument("--num-frames", type=int, default=124)
-    parser.add_argument("--num-inference-steps", type=int, default=8)
+    parser.add_argument("--num-inference-steps", type=int, default=50)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--text-encoder-device",
