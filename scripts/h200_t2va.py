@@ -82,14 +82,17 @@ def main() -> None:
         # weights before group hooks are installed keeps streamed biases and
         # activations on the same dtype with torch 2.5.
         generator_pipeline.vae.to(dtype=torch.float16)
-        for component_name in ("transformer", "vae"):
-            component = getattr(generator_pipeline, component_name)
-            component.enable_group_offload(
-                onload_device=torch.device("cuda:0"),
-                offload_device=torch.device("cpu"),
-                offload_type="block_level",
-                num_blocks_per_group=1,
-            )
+        generator_pipeline.transformer.enable_group_offload(
+            onload_device=torch.device("cuda:0"),
+            offload_device=torch.device("cpu"),
+            offload_type="block_level",
+            num_blocks_per_group=1,
+        )
+        generator_pipeline.vae.enable_group_offload(
+            onload_device=torch.device("cuda:0"),
+            offload_device=torch.device("cpu"),
+            offload_type="leaf_level",
+        )
 
     state = conditioner(prompt=args.prompt)
     results = generator_pipeline(
