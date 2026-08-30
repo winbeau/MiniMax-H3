@@ -78,6 +78,10 @@ def main() -> None:
         local_files_only=True,
     )
     if args.group_offload:
+        # The video decoder runs under float16 autocast. Converting its CPU
+        # weights before group hooks are installed keeps streamed biases and
+        # activations on the same dtype with torch 2.5.
+        generator_pipeline.vae.to(dtype=torch.float16)
         for component_name in ("transformer", "vae"):
             component = getattr(generator_pipeline, component_name)
             component.enable_group_offload(
