@@ -39,7 +39,7 @@ def main() -> None:
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    workflow = ModularPipeline.from_pretrained(model_path).blocks.get_workflow("t2va")
+    workflow = ModularPipeline.from_pretrained(model_path, local_files_only=True).blocks.get_workflow("t2va")
 
     text_manager = ComponentsManager()
     text_manager.enable_auto_cpu_offload(device="cuda:1")
@@ -47,7 +47,11 @@ def main() -> None:
         model_path,
         components_manager=text_manager,
     )
-    conditioner.load_components(dtype=torch.bfloat16)
+    conditioner.load_components(
+        dtype=torch.bfloat16,
+        pretrained_model_name_or_path=model_path,
+        local_files_only=True,
+    )
 
     generation_manager = ComponentsManager()
     generation_manager.enable_auto_cpu_offload(device="cuda:0")
@@ -55,7 +59,11 @@ def main() -> None:
         model_path,
         components_manager=generation_manager,
     )
-    generator_pipeline.load_components(dtype=torch.bfloat16)
+    generator_pipeline.load_components(
+        dtype=torch.bfloat16,
+        pretrained_model_name_or_path=model_path,
+        local_files_only=True,
+    )
 
     state = conditioner(prompt=args.prompt)
     results = generator_pipeline(
