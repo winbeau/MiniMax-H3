@@ -1,0 +1,43 @@
+[project]
+name = "minimax-h3-inference"
+version = "0.1.0"
+description = "Reproducible MiniMax-H3 inference environment for two H200 GPUs"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "accelerate>=1.10,<2",
+    "av>=14,<17",
+    "diffusers==0.40.0",
+    "huggingface-hub>=1.23,<2",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+    "numpy==1.26.4",
+    "pillow>=10",
+    "protobuf>=5",
+    "safetensors>=0.5",
+    "sentencepiece>=0.2",
+    "soundfile>=0.12",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "torchvision==0.20.1",
+    "transformers==5.12.1",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchaudio = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }

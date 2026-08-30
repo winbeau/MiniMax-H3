@@ -1,1 +1,8 @@
 *.safetensors
+.python-version
+!.python-version
+.venv/
+models/
+outputs/
+__pycache__/
+*.py[cod]
