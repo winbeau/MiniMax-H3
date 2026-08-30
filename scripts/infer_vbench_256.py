@@ -234,7 +234,11 @@ def main() -> None:
                 "output": output_path.name,
                 "seed": seed,
                 "elapsed_seconds": round(elapsed, 3),
-                "quality_profile": "lossless-base",
+                "quality_profile": (
+                    "lossless-base"
+                    if args.num_inference_steps == 50
+                    else f"balanced-{args.num_inference_steps - 1}-nfe"
+                ),
                 "sigma_points": args.num_inference_steps,
                 "transformer_evaluations": args.num_inference_steps - 1,
                 "video_flow_shift": 12.0,
